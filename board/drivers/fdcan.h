@@ -169,7 +169,7 @@ void can_rx(uint8_t can_number) {
     }
 
     uint32_t RxFIFO0SA = FDCAN_START_ADDRESS + (can_number * FDCAN_OFFSET);
-    CANPacket_t to_push;
+    CANPacket_t to_push = {0};  // private forward copy must not inherit uninitialised CAN-FD payload bytes
     const canfd_fifo *fifo;
 
     // getting address
@@ -193,25 +193,20 @@ void can_rx(uint8_t can_number) {
     }
     can_set_checksum(&to_push);
 
-    // forwarding (panda only)
-    int bus_fwd_num = safety_fwd_hook(bus_number, to_push.addr);
-    if (bus_fwd_num < 0) {
+    // Packet-aware forwarding of a private RX copy. Preserve the native
+    // fallback route only for non-Tesla modes: a negative Tesla safety
+    // decision must never be bypassed by a configured fallback CAN route.
+    CANPacket_t to_send = to_push;
+    to_send.returned = 0U;
+    to_send.rejected = 0U;
+    int bus_fwd_num = safety_fwd_hook_pkt(bus_number, &to_send);
+    if ((bus_fwd_num < 0) && (current_safety_mode != SAFETY_TESLA_LEGACY)) {
       bus_fwd_num = bus_config[can_number].forwarding_bus;
     }
-    if (bus_fwd_num != -1) {
-      CANPacket_t to_send;
-
-      to_send.fd = to_push.fd;
-      to_send.returned = 0U;
-      to_send.rejected = 0U;
-      to_send.extended = to_push.extended;
-      to_send.addr = to_push.addr;
-      to_send.bus = to_push.bus;
-      to_send.data_len_code = to_push.data_len_code;
-      (void)memcpy(to_send.data, to_push.data, dlc_to_len[to_push.data_len_code]);
+    if (bus_fwd_num >= 0) {
+      to_send.bus = (uint8_t)bus_fwd_num;
       can_set_checksum(&to_send);
-
-      can_send(&to_send, bus_fwd_num, true);
+      can_send(&to_send, (uint8_t)bus_fwd_num, true);
       can_health[can_number].total_fwd_cnt += 1U;
     }
 

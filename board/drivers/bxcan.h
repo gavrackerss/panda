@@ -139,7 +139,7 @@ void can_rx(uint8_t can_number) {
     can_health[can_number].total_rx_cnt += 1U;
 
     // add to my fifo
-    CANPacket_t to_push;
+    CANPacket_t to_push = {0};  // deterministic contents before full-struct forwarding copy
 
     to_push.fd = 0U;
     to_push.returned = 0U;
@@ -152,22 +152,16 @@ void can_rx(uint8_t can_number) {
     WORD_TO_BYTE_ARRAY(&to_push.data[4], CANx->sFIFOMailBox[0].RDHR);
     can_set_checksum(&to_push);
 
-    // forwarding (panda only)
-    int bus_fwd_num = safety_fwd_hook(bus_number, to_push.addr);
-    if (bus_fwd_num != -1) {
-      CANPacket_t to_send;
-
-      to_send.fd = 0U;
-      to_send.returned = 0U;
-      to_send.rejected = 0U;
-      to_send.extended = to_push.extended; // TXRQ
-      to_send.addr = to_push.addr;
-      to_send.bus = to_push.bus;
-      to_send.data_len_code = to_push.data_len_code;
-      (void)memcpy(to_send.data, to_push.data, dlc_to_len[to_push.data_len_code]);
+    // Packet-aware safety forwarding. Always mutate a private RX copy:
+    // no Tesla overlay may alter what safety_rx_hook / host capture observes.
+    CANPacket_t to_send = to_push;
+    to_send.returned = 0U;
+    to_send.rejected = 0U;
+    int bus_fwd_num = safety_fwd_hook_pkt(bus_number, &to_send);
+    if (bus_fwd_num >= 0) {
+      to_send.bus = (uint8_t)bus_fwd_num;
       can_set_checksum(&to_send);
-
-      can_send(&to_send, bus_fwd_num, true);
+      can_send(&to_send, (uint8_t)bus_fwd_num, true);
       can_health[can_number].total_fwd_cnt += 1U;
     }
 
